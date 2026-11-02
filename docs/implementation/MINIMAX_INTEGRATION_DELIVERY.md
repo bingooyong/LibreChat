@@ -107,32 +107,77 @@ MINIMAX_API_KEY=<你的 MiniMax API Key>
 
 注意：MiniMax 的按量付费 API Key 与 M Plan 订阅 Key 是不同凭证体系，需使用与账号和套餐匹配的 Key。
 
+### 用 curl 调 API 时的注意事项
+
+LibreChat 有一个反滥用机制：请求的 User-Agent 若无法解析为浏览器，会记为 `non_browser` 违规，累计到 `BAN_INTERVAL`（默认 20）次就封禁该账号 120 分钟。
+
+用 curl 做 API 测试时**必须带浏览器 UA**，否则账号会被封：
+
+```bash
+UA='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+curl -A "$UA" -H "Authorization: Bearer $TOKEN" ...
+```
+
+另外，每调一次 API 都重新登录会放大违规计数——复用同一个 token 即可。
+
+若已被封禁，解除方式（本地开发环境）：
+
+```javascript
+// mongosh LibreChat
+db.logs.deleteMany({ key: { $regex: '^(ban|BANS)' } });   // 清除封禁记录（4 条）
+```
+
+```bash
+redis-cli DEL "violations:non_browser:non_browser:<userId>"   # 清除违规计数
+```
+
+封禁期间该用户的 session 也会被清除，需要重新登录。
+
 ## 5. 验证结果
+
+配置真实 API Key 后，全部验收项已实测通过。
 
 | 验证项 | 结果 | 证据 |
 | -- | -- | --- |
 | `librechat.yaml` 校验 | **已验证** | 后端启动成功，无 ZodError |
 | 端点注册 | **已验证** | `/api/models` 返回 `"MiniMax CN": ["MiniMax-M3.1-Flash", "MiniMax-M3"]` |
 | 模型选择器显示 | **已验证** | Web 界面模型选择器出现「MiniMax CN」，展开列出两个模型 |
-| 请求路由 | **已验证** | 选中模型发送消息后端报 `Missing API Key for MiniMax CN.`（错误来自 Key 解析，而非端点未找到） |
-| UI 错误呈现 | **已验证** | 消息区显示 `MiniMax CN could not complete this request. / Missing API Key for MiniMax CN.` + 重新生成按钮 |
 | baseURL 路径正确性 | **已验证** | 用假 Key 请求 `https://api.minimaxi.com/anthropic/v1/messages` 返回 **HTTP 401**（非 404），错误体为 Anthropic 标准格式 `{"type":"error","error":{"type":"authentication_error",...}}` |
 | 协议兼容性 | **已验证** | 上游返回 Anthropic Messages API 格式的错误结构，与 `provider: anthropic` 匹配 |
-| Skill 加载 | **已验证** | 启动日志 `Loaded 1 deployment skill(s) from .../skill` |
-| 上游 API 实际调用 | **未验证** | 缺真实 API Key |
-| 流式输出 | **未验证** | 缺真实 API Key |
-| Tool Calling | **未验证** | 缺真实 API Key |
-| 多轮上下文 | **未验证** | 缺真实 API Key |
-| MiniMax 对 Anthropic 特有参数（`thinking`/`cache_control`）的兼容性 | **未验证** | 缺真实 API Key |
+| 上游 API 实际调用 | **已验证** | 冒烟脚本 HTTP 200，模型回「MiniMax连接成功」 |
+| 普通聊天 | **已验证** | 回复「招标文件是招标人发布的、载明项目需求、投标资格、招标程序及评审标准等内容的正式文件。」 |
+| 流式输出 | **已验证** | UI 逐段渲染；思考内容区块（`{"type":"think"}`）被正确解析并持久化 |
+| 多轮上下文 | **已验证** | 第二轮追问准确复述第一轮的四个方面，未重复定义 |
+| 会话标题生成 | **已验证** | `titleConvo` 自动生成标题「招标文件简介」，落库 `endpoint: MiniMax CN` |
+| Tool Calling（协议层） | **已验证** | 直连上游：`stop_reason: tool_use`，发出 Anthropic 格式 `tool_use` 块（`get_weather` / `{"city":"北京"}`） |
+| Tool Calling（端到端） | **已验证** | Agent 实际调用 MCP 工具 `http_ping`，收到 `E2E HTTP MCP pong`，模型据此生成结果表格 |
+| MCP 连接 | **已验证** | 日志 `[MCP][local-test-mcp] Connection successfully established` |
+| Skill 加载 | **已验证** | 启动日志 `Loaded 1 deployment skill(s)`；`/api/skills` 返回该 Skill（`source: deployment`, `fileCount: 2`） |
+| Skill 正文注入 | **已验证** | Agent 准确引用仅存在于 SKILL.md 的内容：「核心原则」段、E 节五个合法符合状态、G-4/G-7 编号项、C 节「风险说明/需要人工确认」、边界小节「文档未载明」 |
+| Agent Builder 创建 | **已验证** | Agent `agent_j4iARW8fOmX1SRPmubmMu`，模型 `MiniMax-M3.1-Flash`，挂载 MCP 工具与 Skill，4 条对话启动器 |
+| Skill 约束实际生效 | **已验证** | 无招标文件时模型主动声明「当前对话中尚无可用招标文件材料，相关结论一律标记为『缺少证据 / 待人工确认』」 |
+| MiniMax 对 Anthropic 特有参数（`thinking`）的兼容性 | **已验证** | 上游返回 thinking 块，LibreChat 正确渲染「思考内容」 |
+| 招标文件真实解析 | **未验证** | 尚未用真实招标文件回归，输出矩阵的证据定位可靠性待验 |
 
-填入 Key 后，按下表顺序补测：
+### 已创建的 Agent
+
+| 项 | 值 |
+| -- | --- |
+| Agent ID | `agent_j4iARW8fOmX1SRPmubmMu` |
+| 名称 | 招标文件智能分析助手 |
+| 模型 | `MiniMax CN` / `MiniMax-M3.1-Flash` |
+| 工具 | `http_ping_mcp_local-test-mcp` |
+| Skills | `bid-document-review`（`skills_enabled: true`） |
+
+**`local-test-mcp` 是连通性测试用的 e2e 夹具**（`e2e/setup/fake-mcp-http-server.js`），仅用于验证工具回路，不代表生产工具集。生产环境应替换为真实的文件检索与代码执行工具：
 
 ```bash
-# 1. 先独立测上游
-MINIMAX_API_KEY=<key> ./scripts/smoke-test-minimax-anthropic.sh
+# 启动夹具（Agent 依赖它）
+E2E_MCP_HTTP_PORT=8765 node e2e/setup/fake-mcp-http-server.js
 
-# 2. 再在 Web 界面逐项验证
-#    验收表见 docs/implementation/BID_REVIEW_AGENT_SETUP.md 第 3 节
+# 移除它（同时从 Agent 的 tools 里摘掉 http_ping_mcp_local-test-mcp）
+curl -X DELETE http://localhost:3080/api/mcp/servers/local-test-mcp \
+  -H "Authorization: Bearer $TOKEN"
 ```
 
 ## 6. 风险
