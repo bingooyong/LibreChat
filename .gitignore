@@ -199,3 +199,10 @@ scripts/activity-labels/results/
 
 # Mutation testing sandboxes
 .stryker-tmp/
+
+# OMC session runtime state (per-session, UUID-named, churns every session)
+.omc/state/
+.omc/notepad.md
+.omc/logs/
+.omc/handoffs/
+.omc/artifacts/
